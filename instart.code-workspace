@@ -2,7 +2,11 @@
     "folders": [
         {
             "name": "instart",
-            "path": "."
+            "path": "/instart"
+        },
+        {
+            "name": "instart_vincy",
+            "path": "/instart_vincy"
         }
     ],
     "settings": {
