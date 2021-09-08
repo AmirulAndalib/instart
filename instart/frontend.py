@@ -239,9 +239,6 @@ class MyWidget(QtWidgets.QWidget):
     async def setDisk(self):
         self.nextbutton.clicked.disconnect()
         self.nextbutton.clicked.connect(self.nextStep)
-        keys = list(self.disks.keys())
-        curr = self.listWidget.currentRow()
-        self.backend.disk = f"/dev/{keys[curr]}"
         await self.installSystem()
 
     @asyncSlot()
@@ -266,7 +263,7 @@ class MyWidget(QtWidgets.QWidget):
         await self.backend.install(self.progressBar, self.subProgressText)
 
     @asyncSlot()
-    async def confirmDiskChoice(self, wat):
+    async def confirmDiskChoice(self):
         self.startLoading()
         self.onlyStopLoading()
         self.nextbutton.clicked.disconnect()
@@ -293,12 +290,22 @@ class MyWidget(QtWidgets.QWidget):
         self.nextbutton.show()
 
     @asyncSlot()
+    async def validateDiskChoice(self, wat) -> None:
+        keys = list(self.disks.keys())
+        self.backend.disk = f"/dev/{keys[wat.index]}"
+
+        if (self.disks[keys[wat.index]] >= (1024 ** 3) * 64):
+            await self.confirmDiskChoice()
+        else:
+            return
+
+    @asyncSlot()
     async def moveToPartitions(self):
         try:
             self.listWidget.itemClicked.disconnect()
         except RuntimeError:
             pass
-        self.listWidget.itemClicked.connect(self.confirmDiskChoice)
+        self.listWidget.itemClicked.connect(self.validateDiskChoice)
         self.backbutton.clicked.disconnect()
         self.backbutton.clicked.connect(self.prevStep)
         self.startLoading()
@@ -318,6 +325,9 @@ class MyWidget(QtWidgets.QWidget):
         for i, prop in enumerate(self.disks.items()):
             QtWidgets.QListWidgetItem(self.listWidget)
             nome, grandezza = prop
+
+            grandezzaFixed = size(grandezza, alternative_size_system)
+
             # if nome in ["result", "errors"] and grandezza in ["done", []]:
             #    # in qualche modo si sono swappate le richieste del setup utenti e del partizionamento, si riprova
             #    self.disks = json.loads(await self.backend.send("disks"))
@@ -326,16 +336,31 @@ class MyWidget(QtWidgets.QWidget):
             # if not type(grandezza) == "int":
             #    continue # mi dicono che il check forse funziona ma tutti dischi apprentemente sono string, ok mo sono confuso
 
-            if (
-                grandezza < 64000000000
-            ):  # ho messo un int() EH # DI NUOVO AAAAAA MA SCIOPA, proviamo senza int, non ho salvato ops vedem se converto a string e poi integrer # non credo manco io
-                # ah mo ho capito, gradetta = 'done'  NO NON DI NUOVO
-                # scusi posso chiedere l'utilita di sto if? che dice se grandezza minore di 64 GB continua se no ignora lo statament
-                # è comploicato da spiegare
-                continue
+            #if (
+            #    grandezza < 64000000000
+            #):  # ho messo un int() EH # DI NUOVO AAAAAA MA SCIOPA, proviamo senza int, non ho salvato ops vedem se converto a string e poi integrer # non credo manco io
+            #    # ah mo ho capito, gradetta = 'done'  NO NON DI NUOVO
+            #    # scusi posso chiedere l'utilita di sto if? che dice se grandezza minore di 64 GB continua se no ignora lo statament
+            #    # è comploicato da spiegare
+            #    continue
 
-            grandezza = size(grandezza, alternative_size_system)
-            self.listWidget.item(i).setText(f"{nome} - Disco {i} da {grandezza}")
+
+            if (grandezza >= (1024 ** 3) * 64):
+                listItem = self.listWidget.item(i)
+                listItem.setText(f"{nome} - Disco {i} da {grandezzaFixed}")
+                listItem.index = i
+            else:
+                listItem = self.listWidget.item(i)
+                listItem.setText(f"{nome} - Disco {i} da {grandezzaFixed} | Disabilitato per: Troppo piccolo")
+                listItem.setFlags(QtCore.Qt.ItemFlags(0x1))
+                listItem.index = i
+
+
+            grandezza = size(grandezza, alternative_size_system) # non lo commento perche non so se serve dopo nel codice
+
+
+            #self.listWidget.item(i).setText(f"{nome} - Disco {i} da {grandezza}")
+
             # if nome == "sda":
             #    self.listWidget.item(i).setHidden(True)
 
