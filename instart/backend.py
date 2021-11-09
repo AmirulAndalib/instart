@@ -2,9 +2,12 @@ import asyncio
 import json
 import os
 import subprocess
-from .partitioning import partition
+import pygit2
+
+from functools import partial
 from PySide2.QtWidgets import QProgressBar, QLabel, QWidget
 from PySide2.QtCore import QTimer
+from aiohttp import ClientSession
 
 
 class PartitionError(Exception):
@@ -42,30 +45,57 @@ class Backend:
         # self.password = "b3JkaXNzaW1v"
         self.disk = ""
 
+    async def umount_media_ordissimo(self):
+        if os.path.exists("/media/ordissimo"):
+            for path in os.listdir("/media/ordissimo"):
+                await self.loop.run_in_executor(
+                    None,
+                    lambda: os.system(
+                        f"sudo umount -Rfl /media/ordissimo/{path}"
+                    )
+                )
+
     async def partition(self):
-        disks = {
-            1: {"label": "root", "path": ""},
-            6: {"label": "var", "path": "/var"},
-            7: {"label": "secours", "path": "/mnt/secours"},
-            8: {"label": "home", "path": "/home"},
-        }
+        efi = os.path.exists("/sys/firmware/efi")
+        if efi:
+            disks = {
+                1: {"label": "root", "path": ""},
+                3: {"label": "var", "path": "/var"},
+                4: {"label": "secours", "path": "/mnt/secours"},
+                5: {"label": "home", "path": "/home"},
+            }
+        else:
+            disks = {
+                1: {"label": "root", "path": ""},
+                6: {"label": "var", "path": "/var"},
+                7: {"label": "secours", "path": "/mnt/secours"},
+                8: {"label": "home", "path": "/home"},
+            }
         try:
             await self.loop.run_in_executor(
                 None, lambda: os.system("sudo umount -Rfl /target; sudo rm -rf /target")
             )
         except Exception:
             pass
+    
+        
+        await self.umount_media_ordissimo()
+
+        if (
+            await self.loop.run_in_executor(
+                None,
+                lambda: os.system(
+                    f"sudo python3 -c 'from instart.partitioning import partition; partition(\"{self.disk}\")'"
+                ),
+            )
+            != 0
+        ):
+            raise PartitionError
+
+
         for n, disk in disks.items():
-            if (
-                await self.loop.run_in_executor(
-                    None,
-                    lambda: os.system(
-                        f"sudo python3 -c 'from instart.partitioning import partition; partition(\"{self.disk}\")'"
-                    ),
-                )
-                != 0
-            ):
-                raise PartitionError
+            print(n, disk)
+            await self.umount_media_ordissimo()
             await self.loop.run_in_executor(
                 None, lambda: os.system(f"sudo mkdir -p /target{disk['path']}")
             )
@@ -87,6 +117,15 @@ class Backend:
             ]:
                 if code != 0:
                     raise PartitionError
+
+        if efi:
+            if await self.loop.run_in_executor(
+                None,
+                lambda: os.system(
+                    f"sudo mkfs.vfat {self.disk}6"
+                ),
+            ) != 0:
+                raise PartitionError
 
     async def disks(self):
         disks = [
@@ -118,6 +157,50 @@ class Backend:
 
     def reboo(*args, **kwargs):
         return subprocess.run("sudo eject -rsfqm; sudo reboot -f", shell=True)
+
+    async def do_update(self, command):
+        update = await self.loop.run_in_executor(
+            None,
+            partial(
+                subprocess.Popen,
+                command,
+                shell=True,
+            ),
+        )
+        poll = update.poll()
+        while poll == None:
+            await asyncio.sleep(0)
+            poll = update.poll()
+        else:
+            if poll != 0:
+                raise ChildProcessError(
+                    f"Il tentativo di aggiornamento ha dato codice {poll}."
+                )
+
+    async def update(self):
+        await self.do_update("sudo git pull")
+        await self.do_update("./preupdate.sh")
+        await self.do_update("sudo pip3.7 install -Ue .")
+        await self.do_update("./postupdate.sh")
+
+    async def checkForUpdates(self):
+        coso = await self.loop.run_in_executor(
+            None, partial(pygit2.discover_repository, "/usr/share/instart")
+        )
+        repo = await self.loop.run_in_executor(
+            None, partial(pygit2.init_repository, coso)
+        )
+        id_ = (
+            await self.loop.run_in_executor(None, partial(repo.revparse_single, "HEAD"))
+        ).id
+
+        async with ClientSession(loop=self.loop) as session:
+            async with session.post(
+                "http://srv1.jxsterg1.space:8045/check_for_updates",
+                json={"id": str(id_)},
+            ) as resp:
+                has_to_update = await resp.json()
+                return has_to_update["has_to_update"]
 
     async def install(self, bar: QProgressBar, text: QLabel):
         self.bar = bar
@@ -163,34 +246,53 @@ class Backend:
             print(percent, self.text.text())
             # self.setProgress(sera, marso)
             self.bar.setProperty("value", percent)
+            poll = running.poll()
+            print(poll)
             if (
-                percent >= 10.025316455696203
-                and line
-                == self._expected_debootstrap_output[-1].replace("I:", "", 1).strip()
+                # percent >= 10.025316455696203
+                # or line
+                # == self._expected_debootstrap_output[-1].replace("I:", "", 1).strip()
+                poll
+                != None
             ):  # cifra completa: 10.025316455696203
+                if poll != 0:
+                    self.text.setText(
+                        "C'è stato un errore. Per riprovare, riavvia il PC."
+                    )
+                    return
                 break
-
+        print("mona")
+        code = 0
         # for code in [
         if not os.path.ismount("/target/proc"):
-            await self.loop.run_in_executor(
+            coso = await self.loop.run_in_executor(
                 None,
                 lambda: os.system(f"sudo mount -t proc /proc /target/proc"),
             )
+            print(coso)
+            code += coso
+
         if not os.path.ismount("/target/dev"):
-            await self.loop.run_in_executor(
+            coso = await self.loop.run_in_executor(
                 None,
                 lambda: os.system(f"sudo mount --rbind /dev /target/dev"),
-            ),
+            )
+            print(coso)
+            code += coso
 
         if not os.path.ismount("/target/sys"):
-            await self.loop.run_in_executor(
+            coso = await self.loop.run_in_executor(
                 None,
                 lambda: os.system(f"sudo mount --rbind /sys /target/sys"),
-            ),
+            )
+            print(coso)
+            code += coso
+
         # ]:
-        #    if code != 0:
-        #        self.text.setText("C'è stato un errore. Per riprovare, riavvia il PC.")
-        #        return
+        if code != 0:
+            for a in range(10):
+                self.text.setText("C'è stato un errore. Per riprovare, riavvia il PC.")
+            return
         # '''
         insttexxt = "Sto installando i pacchetti Ordissimo"
         self.text.setText(insttexxt + ".")

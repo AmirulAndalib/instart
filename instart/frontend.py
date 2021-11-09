@@ -12,11 +12,11 @@
 # idk
 import asyncio
 import traceback
-import aiohttp
 import signal
 import random
-
 import qasync
+
+from aiohttp import ClientSession
 from PySide2 import QtCore, QtGui, QtWidgets
 from PySide2.QtWidgets import QSizePolicy
 from qasync import asyncSlot
@@ -26,13 +26,15 @@ from .backend import Backend
 
 
 class MyWidget(QtWidgets.QWidget):
-    def __init__(self, loop):
+    def __init__(self, loop, app, future):
         super().__init__()
         self.resize(512, 512)
+        self.future = future
+        self.app = app
         self.connected = False
         self.loop = loop
         self.loading_anim = QtWidgets.QLabel()
-        self.loading = QtGui.QMovie("/home/ordissimo/instart/assets/placeholder.gif")
+        self.loading = QtGui.QMovie("/usr/share/instart/assets/placeholder.gif")
         self.loading.setSpeed(500)
         self.loading_anim.setMovie(self.loading)
 
@@ -68,13 +70,14 @@ class MyWidget(QtWidgets.QWidget):
         self.text = QtWidgets.QLabel(
             f"{self.hello}\n"
             "Benvenuto in Debianissimo!\n"
-            "Qui puoi installare Ordissimo OS sul tuo computer!\n"
+            "Se sei qui (complimenti!), allora vorrai installare Debianissimo!\n"
             "Per iniziare, clicca sul pulsante Inizia qui sotto.",
             alignment=QtCore.Qt.AlignCenter,
         )
         self.qlayout.addWidget(self.text)
 
         self.nextbutton.clicked.connect(self.nextStep)
+        self.started = False
         self.backbutton.clicked.connect(self.prevStep)
 
         self.title = QtWidgets.QLabel(alignment=QtCore.Qt.AlignLeft)
@@ -103,10 +106,10 @@ class MyWidget(QtWidgets.QWidget):
         self.subtitle.setFont(font)
         self.subtitle.setWordWrap(True)
         self.label_3 = QtWidgets.QLabel(
-            'Ora inserisci la password dell\'utente che verrà creato. Quella predefinita è "ordissimo"'
+            "Imposta una password per l'utente. La predefenita è 'ordissimo'."
         )  # dove mettiamo?
         self.label_3.setFont(font)
-        self.label_4 = QtWidgets.QLabel("Ora inserisci il nome utente Linux.")
+        self.label_4 = QtWidgets.QLabel("Ora inserisci il nome utente dell'account.")
         self.label_4.setFont(font)
         self.listWidget = QtWidgets.QListWidget()
         self.listWidget.setFont(font)
@@ -139,7 +142,12 @@ class MyWidget(QtWidgets.QWidget):
         self.subProgressText = QtWidgets.QLabel()
         self.subProgressText.setFont(font)
         self.subProgressText.setWordWrap(True)
+        self.textBelowLoading = QtWidgets.QLabel(
+            alignment=QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop
+        )
+        self.textBelowLoading.setStyleSheet("font-size: 20px")
         self.progressBar.setFormat("Progresso: %p%")
+        self.isloading = False
 
     def enableNextButtonOnUsernameOrPassword(self, _):
         self.nextbutton.setEnabled(
@@ -163,7 +171,7 @@ class MyWidget(QtWidgets.QWidget):
         self.backend.user_fullname = fullname
         self.backend.username = username
         self.backend.password = password.decode()  # mo va...
-        self.onlyStopLoading()
+        self.stopLoading()
         self.nextbutton.clicked.disconnect()
         self.nextbutton.clicked.connect(self.nextStep)
         await self.nextStep()
@@ -231,7 +239,7 @@ class MyWidget(QtWidgets.QWidget):
             QtWidgets.QListWidgetItem(self.listWidget)
             self.listWidget.item(i).setText(lingua)
 
-        self.onlyStopLoading()
+        self.stopLoading()
         # questo è movetolanguages non movetopartitions
         # sono un mona seriale
         self.qlayout.addWidget(self.title)
@@ -253,10 +261,10 @@ class MyWidget(QtWidgets.QWidget):
         self.title.setText("Installazione del sistema...")
         self.subtitle.setText(
             "Sto installando il sistema Ordissimo con gli strumenti Debianissimo. "
-            "Potrebbe volerci un po' visto che sto installando anche i pacchetti "
+            "Potrebbe volerci un po' visto che sto installando anche le applicazioni "
             "che puoi trovare nello store."
         )
-        self.onlyStopLoading()
+        self.stopLoading()
         self.qlayout.addWidget(self.title)
         self.title.show()
         self.qlayout.addWidget(self.subtitle)
@@ -271,7 +279,7 @@ class MyWidget(QtWidgets.QWidget):
     @asyncSlot()
     async def confirmDiskChoice(self):
         self.startLoading()
-        self.onlyStopLoading()
+        self.stopLoading()
         self.nextbutton.clicked.disconnect()
         self.nextbutton.clicked.connect(self.setDisk)
         self.backbutton.clicked.disconnect()
@@ -280,7 +288,7 @@ class MyWidget(QtWidgets.QWidget):
         self.subtitle.setText(
             "Sei sicuro di aver scelto il disco giusto? Il disco selezionato verrà formattato, "
             "quindi, dopo questa operazione, perderai TUTTI i dati presenti su quel disco!\n"
-            "Noi non ci assumiamo alcuna responsabilità di quello che fai. Il tuo computer è il tuo computer."
+            "Se a causa di un tuo errore scoppia una guerra nucleare, non è colpa nostra!"
         )
         self.backbutton.setText("‹ No")
         self.nextbutton.setText("Sì ›")
@@ -369,7 +377,7 @@ class MyWidget(QtWidgets.QWidget):
             # if nome == "sda":
             #    self.listWidget.item(i).setHidden(True)
 
-        self.onlyStopLoading()
+        self.stopLoading()
         self.qlayout.addWidget(self.title)
         self.title.show()
         self.qlayout.addWidget(self.subtitle)
@@ -390,8 +398,13 @@ class MyWidget(QtWidgets.QWidget):
         # lol
         # che si fa?
         # /midissocio
+        # ora .zsh
 
-    def startLoading(self):
+    def startLoading(self, text=""):
+        if self.isloading:
+            self.textBelowLoading.setText(text)
+            return
+
         wgts = [
             self.title,
             self.subtitle,
@@ -414,20 +427,84 @@ class MyWidget(QtWidgets.QWidget):
         for itm in itms:
             self.qlayout.removeItem(itm)
 
-        self.mainlayout.addWidget(self.loading_anim, alignment=QtCore.Qt.AlignCenter)
+        align = QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom
+
+        self.mainlayout.addWidget(self.loading_anim, alignment=align)
+        self.mainlayout.addWidget(self.textBelowLoading)
+        self.textBelowLoading.setText(text)
+        self.textBelowLoading.show()
         self.loading_anim.show()
         self.loading.start()
 
-    def onlyStopLoading(self):
+        self.isloading = True
+
+    def stopLoading(self):
+        if not self.isloading:
+            return
+
         self.loading.stop()
         self.mainlayout.removeWidget(self.loading_anim)
+        self.mainlayout.removeWidget(self.textBelowLoading)
+        self.textBelowLoading.hide()
         self.loading_anim.hide()
+
+        self.isloading = False
+
+    @asyncSlot()
+    async def closeApp(self):
+        try:
+            self.loop.call_later(10, self.future.cancel)
+            self.future.cancel()
+            # try:
+            #    for task in asyncio.all_tasks(loop):
+            #        task.cancel()
+            # except asyncio.CancelledError:
+            #   pass
+            self.app.quit()
+            self.loop.stop()
+        except asyncio.CancelledError:
+            return
 
     @asyncSlot()
     async def nextStep(self):  # ora lo cambio in modo che vada sul coso
         # self.text.setText(random.choice(self.hello))
         # self.text.setText("muso marso devi aspettare la risposta..")
         self.startLoading()
+        if not self.started:
+            self.started = True
+            self.startLoading(
+                "Sto controllando se ci sono aggiornamenti per l'installer..."
+            )
+            hasUpdates = await self.backend.checkForUpdates()
+            if hasUpdates:
+                errors = False
+                self.startLoading("Sto aggiornando l'installer...")
+                try:
+                    await self.backend.update()
+                except ChildProcessError:
+                    errors = True
+
+                self.stopLoading()
+                self.text.setText(
+                    "Aggiornamento dell'installer completato!\n"
+                    "Ora, chiudi questa applicazione cliccando\n"
+                    "il pulsante qui sotto, dopodichè avvia di nuovo l'app."
+                )
+                if errors:
+                    self.text.setText(
+                        "C'è stato un problema aggiornando l'installer.\n"
+                        "Per favore, segnala questo problema agli sviluppatori.\n"
+                    )
+                self.nextbutton.setText("Chiudi")
+                self.nextbutton.clicked.connect(self.closeApp)
+                self.buttonslayout.addWidget(self.nextbutton)
+                self.qlayout.addWidget(self.text)
+                self.text.show()
+                self.nextbutton.show()
+                return
+
+        self.startLoading()
+
         self.backbutton.setText("‹ Indietro")
         self.nextbutton.setText("Avanti ›")
         if self.stepsDone == -2:
@@ -451,7 +528,7 @@ class MyWidget(QtWidgets.QWidget):
                 )
                 self.connected = True
 
-        self.onlyStopLoading()
+        self.stopLoading()
 
         self.stepsDone += 1
         if self.stepsDone == -1:
@@ -471,7 +548,7 @@ class MyWidget(QtWidgets.QWidget):
         self.backbutton.setText("‹ Indietro")
         self.nextbutton.setText("Avanti ›")
         self.startLoading()
-        self.onlyStopLoading()
+        self.stopLoading()
 
         self.stepsDone -= 1
         if self.stepsDone == -1:
@@ -487,7 +564,7 @@ async def main():
     loop = asyncio.get_event_loop()
     future = loop.create_future()
 
-    async with aiohttp.ClientSession(loop=loop) as session:
+    async with ClientSession(loop=loop) as session:
         try:
             async with session.get("https://google.com"):
                 pass
@@ -497,7 +574,7 @@ async def main():
             _connection_error = e
 
     app = QtWidgets.QApplication.instance()
-    mainWindow = MyWidget(loop)
+    mainWindow = MyWidget(loop, app, future)
     mainWindow.show()
 
     mainWindow.connected = _connection_error is None
